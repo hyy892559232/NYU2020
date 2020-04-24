@@ -1,0 +1,137 @@
+---
+title: "APSTA-GE 2123 Assignment 4"
+author: "Yuyue Hua"
+output: 
+  pdf_document: 
+    number_sections: yes
+---
+
+
+# Oregon Medicaid Experiment
+
+```{r}
+J <- 50000 # number of households
+dataset <- data.frame(household_ID = as.factor(unlist(lapply(1:J, FUN = function(j) {
+  rep(j, each = sample(1:3, size = 1, prob = c(0.5, 0.3, 0.2)))
+}))))
+selection <- rbinom(nrow(dataset), size = 1, prob = 0.2)
+dataset$lottery <- ave(selection, dataset$household_ID, FUN = any)
+dataset$numhh <- as.factor(ave(dataset$lottery, dataset$household_ID, FUN = length))
+```
+
+## Actual Prior Predictive Distribution
+```{r,message=F,tidy=T}
+setwd("D:\\GRAD-NYU\\1ST YEAR\\NYUclass\\2020 spring\\Bayesian\\NYU2020\\Assignments\\Assignment1")
+rstan::expose_stan_functions("quantile_functions.stan")
+source("GLD_helpers.R")
+
+#create two dummy variables
+dataset$numhh2<-ifelse(dataset$numhh==2,1,0)
+dataset$numhh3<-ifelse(dataset$numhh==3,1,0)
+
+#Set Priors 
+a_s_alpha <- GLD_solver_bounded(bounds = c(0, 26), median = 14, IQR = 6)
+a_s_beta1<- GLD_solver_bounded(bounds = c(-2, 2), median = -0.2, IQR = 1)
+a_s_beta2<- GLD_solver_bounded(bounds = c(-1, 1), median = -0.4, IQR = 1)
+a_s_beta3<- GLD_solver_bounded(bounds = c(-1, 1), median = 0.5, IQR = 1)
+a_s_sigma<- GLD_solver_bounded(bounds = c(0, 5), median = 2, IQR = 1.5)
+
+
+#Draw once from prior predictive distribution
+  alpha_ <-   GLD_icdf(runif(1), median = 14, IQR = 6, asymmetry = a_s_alpha[1], steepness = a_s_alpha[2])  
+  beta1_ <- GLD_icdf(runif(1), median = -0.2, IQR = 1, asymmetry = a_s_beta1[1], steepness = a_s_beta1[2])  
+  beta2_ <- GLD_icdf(runif(1), median = -0.4, IQR = 1, asymmetry = a_s_beta2[1], steepness = a_s_beta2[2])  
+  beta3_ <- GLD_icdf(runif(1), median = 0.5, IQR = 1, asymmetry = a_s_beta3[1], steepness = a_s_beta3[2])  
+  mu_ <- alpha_ + beta1_ * dataset$numhh2+ beta2_ * dataset$numhh3 +beta3_ *dataset$lottery
+  sigma_ <- GLD_icdf(runif(1), median = 2, IQR = 1.5, asymmetry = a_s_sigma[1], steepness = a_s_sigma[2])  
+  epsilon_ <- rnorm(n = length(mu_), mean = 0, sd = sigma_) 
+  y_ <- mu_ + epsilon_  
+
+income_prior<-as.data.frame(y_)
+summary(income_prior)
+hist(income_prior$y_,main="Histogram of prior predictive income",xlab="income_",breaks=20)
+
+```
+
+
+Beta1 and beta2 are two dummy variables to estimate the effect of number of adults in the household. Beta 3 estimates the effect of being given the opportunity to enroll in Medicaid.
+Alpha represents the average estimated income for people in a household with one adult and did not win the Medicaid lottery and I assume income was measured in thousand dollars. The average individual income of someone who is poor enough for Medicaid was about 14,700 dollars in 2007. So I chose the median of alpha to be 14,000 dollars and set the lower bound to be 0.
+From the summary and histogram of prior predictive income, we can see that it is centered at around 14,000 dollars and the minimum is positive.
+
+## Prior Predictive Distribution for a Journal
+
+```{r,,message=F}
+#Adjust Priors for beta3 with median = 0
+a_s_betaJ3<- GLD_solver(lower_quartile = -1, median =0, upper_quartile = 0.65, other_quantile = 0.51, alpha = 0.7)
+
+#Draw from prior distribution of beta3
+betaJ3_<-replicate(10000,GLD_rng(median = 0, IQR = 0.65 - -1, asymmetry = a_s_betaJ3[1], steepness = a_s_betaJ3[2]))
+
+#Compute the percentage of treatment effect greater than 0.5
+#0.5 is the assumed median for beta3 in Question 1.1
+mean(betaJ3_>0.5)
+```
+
+
+# $2018$ American Community Survey
+
+```{r, message = FALSE}
+Idaho <- readr::read_csv(dir(pattern = "csv$"))
+Idaho <- Idaho[ , !startsWith(colnames(Idaho), prefix = "PWG")]
+Idaho <- Idaho[ , !startsWith(colnames(Idaho), prefix = "F")]
+Idaho <- Idaho[!is.na(Idaho$WAGP) & Idaho$WAGP > 0, ]
+```
+
+## Posterior Distribution
+```{r, WAGP, cache = TRUE, results = "hide",message=F}
+#options(mc.cores = parallel::detectCores())
+require(rstanarm)
+post <-stan_lm(log(WAGP) ~ AGEP+I(AGEP^2)+WKHP+WKW,
+ data = Idaho, prior = R2(location = 0.5, what = "mode"), adapt_delta = 0.95)
+```
+
+```{r,tidy=T}
+# analyze the results here
+summary(post,digits = 3)
+```
+
+From the above output, we can see that coefficients of AGEP(Age of a person) and WKHP(Usual hours worked per week past 12 months) are positive with a very high posterior probability. The 10th percentile for the coefficient of AGEP is 0.072 and the 10th percentile for the coefficient of WKHP is 0.033. So both of the two coefficients have at least 90% values that are larger than zero.
+
+
+## Influential Observations
+```{r,message=F}
+loo1<-loo::loo(post,cores=1)
+loo1
+plot(loo1,label_points = TRUE)
+```
+
+The diagnostic plot shows that all Pareto k estimates are approximately bounded between -0.3 and 0.2 and all of them are less than 0.5, which indicates that the observations do not have outsized influence on the posterior distribution.
+
+## Posterior Predictions
+```{r,tidy=T}
+
+set.seed(2020)
+postpred<-as.data.frame(posterior_predict(post,draws=100,seed=2344,fun=exp))
+aveWage<-apply(postpred,FUN = mean,MARGIN = 1)
+hist(aveWage,main="Posterior Distribution of Average Wage",xlab="Average Wage")
+summary(aveWage)
+sd(aveWage)
+```
+
+One way to know the variability of average wage is to look at its distribution. The histogram is approximately bell-shaped. The standard deviation of posterior average wage is 903 and the interquartile range is 45957-44772=1185. Both of the two values measure the uncertainty to a certain extent. Compared to the scale of income, we can say that the "true" average wage is pretty close to 45336 dollars if we believe the model is right.
+
+## Topcoding
+
+```{r,tidy=T}
+topcoded_value <- max(Idaho$WAGP)
+
+#Create a new dataset 
+Idaho_tc<-Idaho[Idaho$WAGP==topcoded_value,]
+postpred_top<-as.data.frame(posterior_predict(post,newdata=Idaho_tc,fun=exp))
+aveWage_top<-apply(postpred_top,FUN = mean,MARGIN = 1)
+
+hist(aveWage_top,main="Posterior Distribution of Average Wages that Were Topcoded",breaks=50,cex.main=0.9)
+summary(aveWage_top)
+```
+
+For people in the dataset whose incomes are topcoded, the posterior distribution for their actual income is centered at around 75055 dollars with mean equaling to 75751 dollars. It is bell-shaped and skewed to the right.
