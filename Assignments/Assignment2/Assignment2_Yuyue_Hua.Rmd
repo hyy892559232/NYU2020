@@ -1,0 +1,126 @@
+---
+title: "APSTA-GE 2123 Assignment 2"
+author: "Yuyue Hua"
+output: 
+  pdf_document: 
+    number_sections: yes
+    keep_tex: yes
+---
+
+# The Impact of Medicaid Expansion on Voter Participation
+
+```{r}
+library(brms)
+library(haven)
+#cat('options(contrasts = c(unordered = "contr.treatment", ordered = "contr.treatment"))', file = "~/.Rprofile", sep = "\n", append = TRUE)
+#unzip("100.00019026_supp.zip")
+oregon <- as_factor(read_dta(file.path("19026_supp", "Data", "individual_voting_data.dta")))
+#table(oregon$treatment) # this indicates who won the Medicaid lottery
+#Sys.setenv(LANG = "en") 
+```
+
+
+## Priors and Prior Predictive Distribution with brms
+
+```{r}
+#get_prior(registered_1 ~ treatment+numhh_list, data = oregon, family =  bernoulli)
+
+prior1 <- brm(registered_1 ~ treatment + numhh_list, data = oregon, family = bernoulli, seed = 2020,sample_prior = "only",prior = 
+                prior(normal(0, 1.5), class = "b") + 
+                prior(normal(0, 3), class = "Intercept") )
+
+ppe<-pp_expect(prior1,nsamples=1100)
+summary(colMeans(ppe))
+```
+
+We can see that the prior predicted probability of being registered to vote is centered at around 0.5 with  minimum of 0.496 and maximum of 0.516. Although it might be worth trying to put more uncertainty on the priors, there are no weird values in this prior predictive distribution.
+
+
+## Posterior Distribution
+
+```{r}
+post1 <- brm(registered_1 ~ treatment + numhh_list, data = oregon, family = bernoulli, seed = 2020,prior = 
+               prior(normal(0, 1.5), class = "b") + 
+               prior(normal(0, 3), class = "Intercept"))
+hypothesis(post1, "treatment > 0")
+
+#draws <- as.matrix(post1)
+#mean(draws[,"b_treatment"]>0)
+```
+
+From the output of hypothesis command, we can see that about 95% of treatment coefficients from the posterior distribution are greater than zero.
+
+## Alternative Model
+```{r}
+post2 <- brm(registered_1 ~ treatment + numhh_list+age_list, data = oregon, family = bernoulli,seed = 2020, prior = 
+               prior(normal(0, 1.5), class = "b") + 
+               prior(normal(0, 3), class = "Intercept"))
+
+loo_subsample(post1,post2,reloo=T)
+```
+
+The output of loo shows an increase in ELPD after age is added into the model.
+
+# Coronavirus in NYC
+```{r}
+ROOT <- "https://raw.githubusercontent.com/nychealth"
+NYC <- readr::read_csv(paste0(ROOT, "/coronavirus-data/master/case-hosp-death.csv"))
+NYC$day <- 1:nrow(NYC)
+```
+
+
+## Negative Binomial Model
+
+```{r}
+#get_prior(CASE_COUNT ~ poly(day,degree = 2, raw = FALSE), data = NYC, family =  negbinomial)
+
+postnb <- brm(CASE_COUNT ~ poly(day,degree = 2, raw = FALSE), data = NYC, family =  negbinomial,seed=2020, prior = 
+          prior(normal(3, 2), class ="b",coef="polydaydegreeEQ2rawEQFALSE1") + 
+          prior(normal(-2, 2), class ="b",coef="polydaydegreeEQ2rawEQFALSE2") +
+          prior(normal(0, 4), class = "Intercept") + 
+          prior(exponential(1), class = "shape"))
+```
+
+## Poisson Model
+
+```{r}
+#get_prior(CASE_COUNT ~ poly(day,degree = 2, raw = FALSE), data = NYC, family =  poisson)
+postpo <- brm(CASE_COUNT ~ poly(day,degree = 2, raw = FALSE), data = NYC, family =  poisson,seed=2020, prior = 
+          prior(normal(0, 2), class ="b",coef="polydaydegreeEQ2rawEQFALSE1") +
+          prior(normal(-2, 2), class ="b",coef="polydaydegreeEQ2rawEQFALSE2") +
+          prior(normal(0, 4), class = "Intercept") )
+```
+
+
+## Model Comparison
+
+```{r}
+library(bayesplot)
+loo(postnb,postpo,reloo=T)
+
+pp_check(postnb, type = "ecdf_overlay") + legend_move("bottom")
+pp_check(postpo, type = "ecdf_overlay") + legend_move("bottom")
+```
+
+We can plot empirical CDF to see which model fits the data better. We can see that negative binomial model seems to capture the overall trend better. The expected log predictive density is further calculated and suggests that negative binomial model is preferable.
+
+
+## Posterior Prediction
+
+```{r}
+#Create new data
+n=dim(NYC)[1]
+newday=as.data.frame(NYC$day[n] + 1:7)
+names(newday)="day"
+
+#Predict for next week
+newcases<-posterior_predict(postnb,newdata=newday)
+par(mfrow=c(3,3))
+for (i in 1: 7){
+  xlabel=paste0("New confirmed cases of day ",n +i)
+  hist(newcases[,i],main="",xlab=xlabel,xlim=c(0,2700))
+}
+round(colMeans(newcases),2)
+```
+
+The histograms for the next coming week shows a decreasing trend of the predicted new confirmed cases everyday with posterior distribution centering more towards left. But we can see that the average predicted values for new confirmed cases of the next 7 days are still quite large. All of them are greater than 100.

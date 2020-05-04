@@ -5,10 +5,10 @@ functions {
     vector[N] log_roach1_ = log_roach1 - mean(log_roach1);
     vector[N] treatment_ = treatment - mean(treatment);
     vector[N] senior_ = senior - mean(senior);
-    vector[N] offset_ = offset - mean(offset);
+    vector[N] offset_ = offset - mean(offset); // mean centered
     matrix[S, N] PPD;
     for (s in 1:S) {
-      real alpha = normal_rng(4, 5);
+      real alpha = normal_rng(mean(log_roach1), 3);
       real beta[3] = normal_rng([0,0,0], 2);
       real phi[N] = rep_array(exponential_rng(1), N);
       real lambda[N] = gamma_rng(phi, phi);
